@@ -49,7 +49,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let openOnLaunch = ProcessInfo.processInfo.environment["CELSIUS_OPEN_ON_LAUNCH"] == "1"
-        if openOnLaunch || !store.hasToken {
+        if openOnLaunch || !store.hasCredentials {
             // Give the status item a moment to appear in the menu bar before anchoring to it.
             Task {
                 try? await Task.sleep(for: .milliseconds(600))

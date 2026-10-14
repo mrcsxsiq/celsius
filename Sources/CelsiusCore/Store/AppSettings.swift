@@ -56,11 +56,14 @@ public protocol SettingsStorage: AnyObject {
     var clientID: String { get }
     var deviceID: String? { get set }
     var temperatureLimits: TemperatureLimits { get set }
+    var provider: ACProvider { get set }
+    var tuyaCredentials: TuyaCredentials? { get set }
 }
 
 public final class AppSettings: SettingsStorage {
     private let defaults: UserDefaults
     private static let tokenAccount = "thinq-pat"
+    private static let tuyaSecretAccount = "tuya-access-secret"
 
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -93,6 +96,32 @@ public final class AppSettings: SettingsStorage {
         set { defaults.set(newValue, forKey: "deviceID") }
     }
 
+    public var provider: ACProvider {
+        get { defaults.string(forKey: "provider").flatMap(ACProvider.init(rawValue:)) ?? .thinQ }
+        set { defaults.set(newValue.rawValue, forKey: "provider") }
+    }
+
+    public var tuyaCredentials: TuyaCredentials? {
+        get {
+            guard let accessID = defaults.string(forKey: "tuyaAccessID"), !accessID.isEmpty,
+                  let secret = Keychain.read(Self.tuyaSecretAccount), !secret.isEmpty
+            else { return nil }
+            let region = defaults.string(forKey: "tuyaRegion").flatMap(TuyaRegion.init(rawValue:)) ?? .westernAmerica
+            return TuyaCredentials(accessID: accessID, accessSecret: secret, region: region)
+        }
+        set {
+            if let newValue {
+                defaults.set(newValue.accessID, forKey: "tuyaAccessID")
+                defaults.set(newValue.region.rawValue, forKey: "tuyaRegion")
+                Keychain.write(newValue.accessSecret, account: Self.tuyaSecretAccount)
+            } else {
+                defaults.removeObject(forKey: "tuyaAccessID")
+                defaults.removeObject(forKey: "tuyaRegion")
+                Keychain.delete(Self.tuyaSecretAccount)
+            }
+        }
+    }
+
     public var temperatureLimits: TemperatureLimits {
         get {
             defaults.data(forKey: "temperatureLimits")
@@ -107,10 +136,17 @@ public final class InMemorySettings: SettingsStorage {
     public var clientID = "celsius-test"
     public var deviceID: String?
     public var temperatureLimits: TemperatureLimits
+    public var provider: ACProvider
+    public var tuyaCredentials: TuyaCredentials?
 
-    public init(token: String? = nil, deviceID: String? = nil, temperatureLimits: TemperatureLimits = .standard) {
+    public init(
+        token: String? = nil, deviceID: String? = nil, temperatureLimits: TemperatureLimits = .standard,
+        provider: ACProvider = .thinQ, tuyaCredentials: TuyaCredentials? = nil
+    ) {
         self.token = token
         self.deviceID = deviceID
         self.temperatureLimits = temperatureLimits
+        self.provider = provider
+        self.tuyaCredentials = tuyaCredentials
     }
 }

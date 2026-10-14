@@ -9,11 +9,18 @@ struct SettingsView: View {
     var onBack: () -> Void
 
     @State private var token = ""
+    @State private var chosenProvider: ACProvider?
+    @State private var tuyaAccessID = ""
+    @State private var tuyaSecret = ""
+    @State private var tuyaRegion = TuyaRegion.westernAmerica
     @State private var isConnecting = false
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var loginError: String?
 
     private static let tokenPortal = URL(string: "https://connect-pat.lgthinq.com")!
+    private static let tuyaPortal = URL(string: "https://iot.tuya.com")!
+
+    private var provider: ACProvider { chosenProvider ?? store.provider }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -34,7 +41,7 @@ struct SettingsView: View {
 
             section("LG ThinQ") {
                 VStack(alignment: .leading, spacing: 10) {
-                    if let device = store.device, store.hasToken {
+                    if let device = store.device, store.hasCredentials {
                         HStack(spacing: 10) {
                             Image(systemName: "air.conditioner.horizontal")
                                 .font(.system(size: 16))
@@ -51,53 +58,22 @@ struct SettingsView: View {
                         if store.devices.count > 1 {
                             devicePicker
                         }
-                    } else {
-                        Text("Paste a Personal Access Token from your LG account to connect to your air conditioner.")
-                            .font(.system(size: 12))
-                            .foregroundStyle(Theme.secondaryText)
-                            .fixedSize(horizontal: false, vertical: true)
                     }
 
-                    HStack(spacing: 8) {
-                        SecureField(store.hasToken ? "Replace token" : "thinqpat_…", text: $token)
-                            .textFieldStyle(.plain)
-                            .font(.system(size: 12, design: .monospaced))
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 7)
-                            .background(RoundedRectangle(cornerRadius: 8).fill(Color.black.opacity(0.3)))
-                            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.cardStroke))
-                            .onSubmit(connect)
-                        Button(action: pasteToken) {
-                            Image(systemName: "doc.on.clipboard")
-                        }
-                        .help("Paste the token from the clipboard")
-                        .accessibilityLabel("Paste token")
-                        .disabled(isConnecting)
-                        Button(action: connect) {
-                            if isConnecting {
-                                ProgressView().controlSize(.small)
-                            } else {
-                                Text("Connect")
-                            }
-                        }
-                        .disabled(token.trimmingCharacters(in: .whitespaces).isEmpty || isConnecting)
-                    }
+                    SegmentedControl(
+                        options: [("LG ThinQ", ACProvider.thinQ), ("Elgin / Tuya", ACProvider.tuya)],
+                        selection: Binding(get: { provider }, set: { chosenProvider = $0 })
+                    )
+                    .accessibilityLabel("Brand")
 
-                    if case .unauthorized = store.connection {
-                        Label("LG rejected this token. Create a new one and paste it here.", systemImage: "exclamationmark.triangle")
-                            .font(.system(size: 11))
-                            .foregroundStyle(Theme.warning)
+                    switch provider {
+                    case .thinQ: thinQForm
+                    case .tuya: tuyaForm
                     }
-
-                    Link(destination: Self.tokenPortal) {
-                        Label("Create a token at connect-pat.lgthinq.com", systemImage: "arrow.up.right.square")
-                            .font(.system(size: 12))
-                    }
-                    .foregroundStyle(Theme.accent)
                 }
             }
 
-            if store.hasToken {
+            if store.hasCredentials {
                 section("Temperature") {
                     temperatureLimits
                 }
@@ -120,7 +96,7 @@ struct SettingsView: View {
             }
 
             HStack {
-                if store.hasToken {
+                if store.hasCredentials {
                     Button("Sign out") {
                         store.signOut()
                     }
@@ -132,6 +108,135 @@ struct SettingsView: View {
                 .keyboardShortcut("q")
             }
             .font(.system(size: 12))
+        }
+    }
+
+    private var thinQForm: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if !store.hasCredentials {
+                Text("Paste a Personal Access Token from your LG account to connect to your air conditioner.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        HStack(spacing: 8) {
+            SecureField(store.hasCredentials ? "Replace token" : "thinqpat_…", text: $token)
+                .textFieldStyle(.plain)
+                .font(.system(size: 12, design: .monospaced))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color.black.opacity(0.3)))
+                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.cardStroke))
+                .onSubmit(connect)
+            Button(action: pasteToken) {
+                Image(systemName: "doc.on.clipboard")
+            }
+            .help("Paste the token from the clipboard")
+            .accessibilityLabel("Paste token")
+            .disabled(isConnecting)
+            Button(action: connect) {
+                if isConnecting {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Text("Connect")
+                }
+            }
+            .disabled(token.trimmingCharacters(in: .whitespaces).isEmpty || isConnecting)
+        }
+
+        if case .unauthorized = store.connection {
+            Label("LG rejected this token. Create a new one and paste it here.", systemImage: "exclamationmark.triangle")
+                .font(.system(size: 11))
+                .foregroundStyle(Theme.warning)
+        }
+
+        Link(destination: Self.tokenPortal) {
+            Label("Create a token at connect-pat.lgthinq.com", systemImage: "arrow.up.right.square")
+                .font(.system(size: 12))
+        }
+        .foregroundStyle(Theme.accent)
+        }
+    }
+
+    private var tuyaForm: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if !store.hasCredentials {
+                Text("Elgin air conditioners use the Tuya cloud. Create a project at iot.tuya.com, link your Elgin Smart or Smart Life account to it, then paste the project's Access ID and Access Secret.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            field { TextField(store.hasCredentials ? "Replace Access ID" : "Access ID", text: $tuyaAccessID) }
+            field { SecureField(store.hasCredentials ? "Replace Access Secret" : "Access Secret", text: $tuyaSecret) }
+                .onSubmit(connectTuya)
+
+            HStack {
+                Text("Data center")
+                    .font(.system(size: 13))
+                Spacer()
+                PopUpButton(
+                    options: TuyaRegion.allCases.map { ($0.title, $0) },
+                    selection: $tuyaRegion
+                )
+                .frame(width: 140)
+                .accessibilityLabel("Data center")
+            }
+
+            HStack {
+                Spacer()
+                Button(action: connectTuya) {
+                    if isConnecting {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Text("Connect")
+                    }
+                }
+                .disabled(!canConnectTuya || isConnecting)
+            }
+
+            if case .unauthorized = store.connection {
+                Label("Tuya rejected these keys, or the project can't see your devices. Check the Access ID, the secret and the data center.", systemImage: "exclamationmark.triangle")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.warning)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Link(destination: Self.tuyaPortal) {
+                Label("Open the Tuya IoT Platform", systemImage: "arrow.up.right.square")
+                    .font(.system(size: 12))
+            }
+            .foregroundStyle(Theme.accent)
+        }
+    }
+
+    private func field<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        content()
+            .textFieldStyle(.plain)
+            .font(.system(size: 12, design: .monospaced))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(RoundedRectangle(cornerRadius: 8).fill(Color.black.opacity(0.3)))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Theme.cardStroke))
+    }
+
+    private var canConnectTuya: Bool {
+        !tuyaAccessID.trimmingCharacters(in: .whitespaces).isEmpty
+            && !tuyaSecret.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    private func connectTuya() {
+        guard canConnectTuya, !isConnecting else { return }
+        isConnecting = true
+        let credentials = TuyaCredentials(accessID: tuyaAccessID, accessSecret: tuyaSecret, region: tuyaRegion)
+        Task {
+            await store.connect(tuya: credentials)
+            isConnecting = false
+            if store.connection == .connected || store.connection == .deviceError {
+                tuyaAccessID = ""
+                tuyaSecret = ""
+                if canGoBack { onBack() }
+            }
         }
     }
 

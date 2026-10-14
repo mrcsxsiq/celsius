@@ -74,6 +74,8 @@ public final class ACStore {
 
     @ObservationIgnored private let settings: SettingsStorage
     @ObservationIgnored private let makeClient: (String, String) -> ThinQClient
+    @ObservationIgnored private let makeTuyaClient: (TuyaCredentials) -> TuyaClient
+    @ObservationIgnored private var tuyaClient: (credentials: TuyaCredentials, client: TuyaClient)?
     @ObservationIgnored private let now: () -> Date
     @ObservationIgnored private let isPreview: Bool
     @ObservationIgnored private let updateChecker: UpdateChecker?
@@ -98,6 +100,7 @@ public final class ACStore {
     public init(
         settings: SettingsStorage,
         makeClient: @escaping (String, String) -> ThinQClient = { ThinQClient(token: $0, clientID: $1) },
+        makeTuyaClient: @escaping (TuyaCredentials) -> TuyaClient = { TuyaClient(credentials: $0) },
         now: @escaping () -> Date = Date.init,
         updateChecker: UpdateChecker? = nil,
         sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
@@ -106,10 +109,11 @@ public final class ACStore {
         self.sleep = sleep
         self.settings = settings
         self.makeClient = makeClient
+        self.makeTuyaClient = makeTuyaClient
         self.now = now
         self.isPreview = false
         self.temperatureLimits = settings.temperatureLimits
-        if settings.token?.isEmpty ?? true { connection = .needsSetup }
+        if !Self.hasCredentials(settings) { connection = .needsSetup }
     }
 
     /// A store with fixed data that never touches the network, for snapshots.
@@ -125,6 +129,7 @@ public final class ACStore {
         self.settings = InMemorySettings(token: "preview", temperatureLimits: limits)
         self.temperatureLimits = limits
         self.makeClient = { ThinQClient(token: $0, clientID: $1) }
+        self.makeTuyaClient = { TuyaClient(credentials: $0) }
         self.now = Date.init
         self.isPreview = true
         self.updateChecker = nil
@@ -159,7 +164,30 @@ public final class ACStore {
     /// What the UI offers: the device's capabilities within the user's temperature limits.
     public var capabilities: ACCapabilities { deviceCapabilities.limited(to: temperatureLimits) }
 
-    public var hasToken: Bool { !(settings.token?.isEmpty ?? true) }
+    public var provider: ACProvider { settings.provider }
+
+    public var hasCredentials: Bool { Self.hasCredentials(settings) }
+
+    private static func hasCredentials(_ settings: SettingsStorage) -> Bool {
+        switch settings.provider {
+        case .thinQ: !(settings.token?.isEmpty ?? true)
+        case .tuya: settings.tuyaCredentials != nil
+        }
+    }
+
+    private func makeService() -> (any ACService)? {
+        switch settings.provider {
+        case .thinQ:
+            guard let token = settings.token, !token.isEmpty else { return nil }
+            return makeClient(token, settings.clientID)
+        case .tuya:
+            guard let credentials = settings.tuyaCredentials else { return nil }
+            if let tuyaClient, tuyaClient.credentials == credentials { return tuyaClient.client }
+            let client = makeTuyaClient(credentials)
+            tuyaClient = (credentials, client)
+            return client
+        }
+    }
 
     // MARK: Lifecycle
 
@@ -218,6 +246,27 @@ public final class ACStore {
             showMessage("Couldn't save the token in the keychain")
             return
         }
+        settings.provider = .thinQ
+        forgetDevice()
+        connection = .loading
+        await refresh()
+        if isActive { startPolling(immediately: false) }
+    }
+
+    public func connect(tuya credentials: TuyaCredentials) async {
+        let credentials = TuyaCredentials(
+            accessID: credentials.accessID.trimmingCharacters(in: .whitespacesAndNewlines),
+            accessSecret: credentials.accessSecret.trimmingCharacters(in: .whitespacesAndNewlines),
+            region: credentials.region
+        )
+        settings.tuyaCredentials = credentials
+        guard settings.tuyaCredentials == credentials else {
+            connection = .needsSetup
+            showMessage("Couldn't save the keys in the keychain")
+            return
+        }
+        settings.provider = .tuya
+        tuyaClient = nil
         forgetDevice()
         connection = .loading
         await refresh()
@@ -247,6 +296,8 @@ public final class ACStore {
 
     public func signOut() {
         settings.token = nil
+        settings.tuyaCredentials = nil
+        tuyaClient = nil
         forgetDevice()
         queue = []
         connection = .needsSetup
@@ -265,7 +316,7 @@ public final class ACStore {
 
     public func refresh() async {
         guard !isPreview, !isRefreshing else { return }
-        guard let token = settings.token, !token.isEmpty else {
+        guard let client = makeService() else {
             connection = .needsSetup
             return
         }
@@ -273,7 +324,6 @@ public final class ACStore {
         defer { isRefreshing = false }
         if serverStatus == nil { connection = .loading }
 
-        let client = makeClient(token, settings.clientID)
         do {
             let status = try await retryingTransient {
                 let deviceID = try await resolveDevice(client)
@@ -316,7 +366,7 @@ public final class ACStore {
         isReconnecting = false
     }
 
-    private func resolveDevice(_ client: ThinQClient) async throws -> String {
+    private func resolveDevice(_ client: any ACService) async throws -> String {
         if let device, device.id == settings.deviceID { return device.id }
         let devices = try await client.devices().filter(\.isAirConditioner)
         guard let chosen = devices.first(where: { $0.id == settings.deviceID }) ?? devices.first else {
@@ -414,8 +464,7 @@ public final class ACStore {
 
     private func send(_ command: ACCommand) async {
         guard !isPreview else { return }
-        guard let token = settings.token, let deviceID = device?.id else { return }
-        let client = makeClient(token, settings.clientID)
+        guard let client = makeService(), let deviceID = device?.id else { return }
         var retried = false
         while true {
             do {
